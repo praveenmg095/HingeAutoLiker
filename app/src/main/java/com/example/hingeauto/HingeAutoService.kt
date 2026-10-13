@@ -117,9 +117,11 @@ class HingeAutoService : AccessibilityService() {
     private fun label(n: AccessibilityNodeInfo): String =
         ((n.text?.toString() ?: "") + " " + (n.contentDescription?.toString() ?: "")).lowercase()
 
+    // Finds the "Send like" button. Never matches the rose button.
     private fun findSend(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (node == null) return null
-        if (label(node).contains("send")) return node
+        val l = label(node)
+        if (l.contains("send") && l.contains("like") && !l.contains("rose")) return node
         for (i in 0 until node.childCount) findSend(node.getChild(i))?.let { return it }
         return null
     }
@@ -127,7 +129,7 @@ class HingeAutoService : AccessibilityService() {
     private fun findHeart(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (node == null) return null
         val l = label(node)
-        if (l.contains("like") && !l.contains("likes") && !l.contains("send")) return node
+        if (l.contains("like") && !l.contains("likes") && !l.contains("send") && !l.contains("rose")) return node
         for (i in 0 until node.childCount) findHeart(node.getChild(i))?.let { return it }
         return null
     }
