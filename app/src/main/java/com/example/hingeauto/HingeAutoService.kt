@@ -1,11 +1,14 @@
 package com.example.hingeauto
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Path
+import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -36,6 +39,9 @@ class HingeAutoService : AccessibilityService() {
         const val HINGE_PKG = "co.hinge.app"
         const val MAX_LIKES = 8
         const val NEXT_PROFILE_DELAY = 2000L
+        // Fallback tap position of "Send like" (fraction of screen)
+        const val SEND_X = 0.59f
+        const val SEND_Y = 0.725f
     }
 
     override fun onServiceConnected() {
@@ -51,42 +57,46 @@ class HingeAutoService : AccessibilityService() {
         }
     }
 
+    private fun allRoots(): List<AccessibilityNodeInfo> {
+        val list = mutableListOf<AccessibilityNodeInfo>()
+        try { for (w in windows) w.root?.let { list.add(it) } } catch (e: Exception) { }
+        rootInActiveWindow?.let { list.add(it) }
+        return list
+    }
+
     private fun step() {
         if (!running) return
-        val root = rootInActiveWindow
-        if (root == null || root.packageName != HINGE_PKG || count >= MAX_LIKES) {
+        val roots = allRoots()
+        if (roots.none { it.packageName == HINGE_PKG } || count >= MAX_LIKES) {
             running = false
             return
         }
 
-        val sendBtn = findSend(root)
+        val sendBtn = roots.firstNotNullOfOrNull { findSend(it) }
         if (sendBtn != null) {
-            click(sendBtn)
-            count++
-            heartClicked = false
-            attempts = 0
-            noHeart = 0
-            handler.postDelayed({ step() }, NEXT_PROFILE_DELAY)
+            clickNode(sendBtn)
+            finishLike()
         } else if (heartClicked) {
             attempts++
-            if (attempts >= 4) {
-                dumpScreen(root)
-                halted = true
-                running = false
+            if (attempts >= 2) {
+                // Send button not visible to the service: tap its known position
+                val dm = resources.displayMetrics
+                tap(dm.widthPixels * SEND_X, dm.heightPixels * SEND_Y)
+                finishLike()
             } else {
                 handler.postDelayed({ step() }, 1000)
             }
         } else {
-            val heart = findHeart(root)
+            val heart = roots.firstNotNullOfOrNull { findHeart(it) }
             if (heart != null) {
-                click(heart)
+                clickNode(heart)
                 heartClicked = true
                 attempts = 0
                 noHeart = 0
             } else {
                 noHeart++
                 if (noHeart >= 3) {
-                    dumpScreen(root)
+                    dumpScreen(roots)
                     halted = true
                     running = false
                     return
@@ -94,6 +104,14 @@ class HingeAutoService : AccessibilityService() {
             }
             handler.postDelayed({ step() }, 1500)
         }
+    }
+
+    private fun finishLike() {
+        count++
+        heartClicked = false
+        attempts = 0
+        noHeart = 0
+        handler.postDelayed({ step() }, NEXT_PROFILE_DELAY)
     }
 
     private fun label(n: AccessibilityNodeInfo): String =
@@ -114,18 +132,30 @@ class HingeAutoService : AccessibilityService() {
         return null
     }
 
-    private fun click(node: AccessibilityNodeInfo) {
+    private fun clickNode(node: AccessibilityNodeInfo) {
         var n: AccessibilityNodeInfo? = node
         while (n != null && !n.isClickable) n = n.parent
-        n?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val ok = n?.performAction(AccessibilityNodeInfo.ACTION_CLICK) ?: false
+        if (!ok) {
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            tap(r.exactCenterX(), r.exactCenterY())
+        }
     }
 
-    private fun dumpScreen(root: AccessibilityNodeInfo) {
+    private fun tap(x: Float, y: Float) {
+        val path = Path().apply { moveTo(x, y) }
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 80))
+            .build()
+        dispatchGesture(g, null, null)
+    }
+
+    private fun dumpScreen(roots: List<AccessibilityNodeInfo>) {
         val sb = StringBuilder()
         fun walk(n: AccessibilityNodeInfo?, d: Int) {
             if (n == null || sb.length > 9000) return
-            val hasInfo = n.text != null || n.contentDescription != null || n.isClickable
-            if (hasInfo) {
+            if (n.text != null || n.contentDescription != null || n.isClickable) {
                 sb.append("  ".repeat(d)).append(n.className)
                     .append(" | text=").append(n.text)
                     .append(" | desc=").append(n.contentDescription)
@@ -133,7 +163,7 @@ class HingeAutoService : AccessibilityService() {
             }
             for (i in 0 until n.childCount) walk(n.getChild(i), d + 1)
         }
-        walk(root, 0)
+        roots.forEachIndexed { i, r -> sb.append("=== WINDOW $i ===\n"); walk(r, 0) }
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("hinge-dump", sb.toString()))
         Toast.makeText(this, "Screen info copied. Paste it to Claude.", Toast.LENGTH_LONG).show()
