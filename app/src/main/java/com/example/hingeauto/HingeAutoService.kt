@@ -28,20 +28,17 @@ class HingeAutoService : AccessibilityService() {
     private var running = false
     private var halted = false
     private var heartClicked = false
+    private var attempts = 0
     private var count = 0
 
     companion object {
         const val HINGE_PKG = "co.hinge.app"
-        const val COMMENT = "Heyy.. let's connect and talk"
         const val MAX_LIKES = 8
         const val NEXT_PROFILE_DELAY = 2000L
     }
 
     override fun onServiceConnected() {
-        halted = false
-        running = false
-        count = 0
-        heartClicked = false
+        running = false; halted = false; heartClicked = false; attempts = 0; count = 0
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -60,88 +57,48 @@ class HingeAutoService : AccessibilityService() {
             return
         }
 
-        val sendBtn = find(root, "Send")
+        val sendBtn = findSend(root)
         if (sendBtn != null) {
-            // Focus the comment field first
-            val field = findEditText(root)
-            field?.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            field?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-
-            handler.postDelayed({
-                val r = rootInActiveWindow
-                val f = findEditText(r)
-                if (f != null) {
-                    val args = Bundle().apply {
-                        putCharSequence(
-                            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, COMMENT
-                        )
-                    }
-                    f.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-                }
-                handler.postDelayed({
-                    val r2 = rootInActiveWindow
-                    if (r2 != null) {
-                        find(r2, "Send")?.let { click(it) }
-                    }
-                    count++
-                    heartClicked = false
-                    handler.postDelayed({ step() }, NEXT_PROFILE_DELAY)
-                }, 700)
-            }, 500)
+            click(sendBtn)
+            count++
+            heartClicked = false
+            attempts = 0
+            handler.postDelayed({ step() }, NEXT_PROFILE_DELAY)
         } else if (heartClicked) {
-            // Heart was tapped but no Send button found: dump the screen for debugging
-            dumpScreen(root)
-            halted = true
-            running = false
+            attempts++
+            if (attempts >= 4) {
+                dumpScreen(root)
+                halted = true
+                running = false
+            } else {
+                handler.postDelayed({ step() }, 1000)
+            }
         } else {
-            val heart = find(root, "Like")
+            val heart = findHeart(root)
             if (heart != null) {
                 click(heart)
                 heartClicked = true
+                attempts = 0
             }
             handler.postDelayed({ step() }, 1500)
         }
     }
 
-    private fun dumpScreen(root: AccessibilityNodeInfo) {
-        val sb = StringBuilder()
-        fun walk(n: AccessibilityNodeInfo?, depth: Int) {
-            if (n == null || sb.length > 6000) return
-            sb.append("  ".repeat(depth))
-                .append(n.className).append(" | text=").append(n.text)
-                .append(" | desc=").append(n.contentDescription)
-                .append(" | id=").append(n.viewIdResourceName)
-                .append(" | click=").append(n.isClickable)
-                .append(" | edit=").append(n.isEditable)
-                .append("\n")
-            for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1)
-        }
-        walk(root, 0)
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("hinge-dump", sb.toString()))
-        Toast.makeText(this, "Screen info copied. Paste it to Claude.", Toast.LENGTH_LONG).show()
-    }
+    private fun label(n: AccessibilityNodeInfo): String =
+        ((n.text?.toString() ?: "") + " " + (n.contentDescription?.toString() ?: "")).lowercase()
 
-    private fun find(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
-        root.findAccessibilityNodeInfosByText(label)?.firstOrNull()?.let { return it }
-        return searchDesc(root, label)
-    }
-
-    private fun searchDesc(node: AccessibilityNodeInfo?, label: String): AccessibilityNodeInfo? {
+    private fun findSend(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (node == null) return null
-        if (node.contentDescription?.toString()?.contains(label, true) == true) return node
-        for (i in 0 until node.childCount) {
-            searchDesc(node.getChild(i), label)?.let { return it }
-        }
+        if (label(node).contains("send")) return node
+        for (i in 0 until node.childCount) findSend(node.getChild(i))?.let { return it }
         return null
     }
 
-    private fun findEditText(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+    private fun findHeart(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (node == null) return null
-        if (node.isEditable || node.className?.toString()?.contains("EditText") == true) return node
-        for (i in 0 until node.childCount) {
-            findEditText(node.getChild(i))?.let { return it }
-        }
+        val l = label(node)
+        if (l.contains("like") && !l.contains("send")) return node
+        for (i in 0 until node.childCount) findHeart(node.getChild(i))?.let { return it }
         return null
     }
 
@@ -149,6 +106,23 @@ class HingeAutoService : AccessibilityService() {
         var n: AccessibilityNodeInfo? = node
         while (n != null && !n.isClickable) n = n.parent
         n?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
+    private fun dumpScreen(root: AccessibilityNodeInfo) {
+        val sb = StringBuilder()
+        fun walk(n: AccessibilityNodeInfo?, d: Int) {
+            if (n == null || sb.length > 6000) return
+            sb.append("  ".repeat(d)).append(n.className)
+                .append(" | text=").append(n.text)
+                .append(" | desc=").append(n.contentDescription)
+                .append(" | id=").append(n.viewIdResourceName)
+                .append(" | click=").append(n.isClickable).append("\n")
+            for (i in 0 until n.childCount) walk(n.getChild(i), d + 1)
+        }
+        walk(root, 0)
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("hinge-dump", sb.toString()))
+        Toast.makeText(this, "Screen info copied. Paste it to Claude.", Toast.LENGTH_LONG).show()
     }
 
     override fun onInterrupt() { running = false }
