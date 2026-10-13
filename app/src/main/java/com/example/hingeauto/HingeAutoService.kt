@@ -29,6 +29,7 @@ class HingeAutoService : AccessibilityService() {
     private var halted = false
     private var heartClicked = false
     private var attempts = 0
+    private var noHeart = 0
     private var count = 0
 
     companion object {
@@ -38,7 +39,8 @@ class HingeAutoService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
-        running = false; halted = false; heartClicked = false; attempts = 0; count = 0
+        running = false; halted = false; heartClicked = false
+        attempts = 0; noHeart = 0; count = 0
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -63,6 +65,7 @@ class HingeAutoService : AccessibilityService() {
             count++
             heartClicked = false
             attempts = 0
+            noHeart = 0
             handler.postDelayed({ step() }, NEXT_PROFILE_DELAY)
         } else if (heartClicked) {
             attempts++
@@ -79,6 +82,15 @@ class HingeAutoService : AccessibilityService() {
                 click(heart)
                 heartClicked = true
                 attempts = 0
+                noHeart = 0
+            } else {
+                noHeart++
+                if (noHeart >= 3) {
+                    dumpScreen(root)
+                    halted = true
+                    running = false
+                    return
+                }
             }
             handler.postDelayed({ step() }, 1500)
         }
@@ -97,7 +109,7 @@ class HingeAutoService : AccessibilityService() {
     private fun findHeart(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (node == null) return null
         val l = label(node)
-        if (l.contains("like") && !l.contains("send")) return node
+        if (l.contains("like") && !l.contains("likes") && !l.contains("send")) return node
         for (i in 0 until node.childCount) findHeart(node.getChild(i))?.let { return it }
         return null
     }
@@ -111,12 +123,14 @@ class HingeAutoService : AccessibilityService() {
     private fun dumpScreen(root: AccessibilityNodeInfo) {
         val sb = StringBuilder()
         fun walk(n: AccessibilityNodeInfo?, d: Int) {
-            if (n == null || sb.length > 6000) return
-            sb.append("  ".repeat(d)).append(n.className)
-                .append(" | text=").append(n.text)
-                .append(" | desc=").append(n.contentDescription)
-                .append(" | id=").append(n.viewIdResourceName)
-                .append(" | click=").append(n.isClickable).append("\n")
+            if (n == null || sb.length > 9000) return
+            val hasInfo = n.text != null || n.contentDescription != null || n.isClickable
+            if (hasInfo) {
+                sb.append("  ".repeat(d)).append(n.className)
+                    .append(" | text=").append(n.text)
+                    .append(" | desc=").append(n.contentDescription)
+                    .append(" | click=").append(n.isClickable).append("\n")
+            }
             for (i in 0 until n.childCount) walk(n.getChild(i), d + 1)
         }
         walk(root, 0)
