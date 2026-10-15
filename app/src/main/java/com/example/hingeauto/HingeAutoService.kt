@@ -33,11 +33,12 @@ class HingeAutoService : AccessibilityService() {
     private var heartClicked = false
     private var attempts = 0
     private var noHeart = 0
+    private var missing = 0
     private var count = 0
 
     companion object {
         const val HINGE_PKG = "co.hinge.app"
-        const val MAX_LIKES = 8
+        const val MAX_LIKES = 200
         const val NEXT_PROFILE_DELAY = 2000L
         // Fallback tap position of "Send like" (fraction of screen)
         const val SEND_X = 0.59f
@@ -46,7 +47,7 @@ class HingeAutoService : AccessibilityService() {
 
     override fun onServiceConnected() {
         running = false; halted = false; heartClicked = false
-        attempts = 0; noHeart = 0; count = 0
+        attempts = 0; noHeart = 0; missing = 0; count = 0
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -64,13 +65,32 @@ class HingeAutoService : AccessibilityService() {
         return list
     }
 
+    private fun toast(msg: String) {
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+    }
+
     private fun step() {
         if (!running) return
-        val roots = allRoots()
-        if (roots.none { it.packageName == HINGE_PKG } || count >= MAX_LIKES) {
+
+        if (count >= MAX_LIKES) {
+            toast("Done: $count likes sent.")
             running = false
             return
         }
+
+        val roots = allRoots()
+        val hingeShown = roots.any { it.packageName == HINGE_PKG }
+        if (!hingeShown) {
+            // Hinge not on screen (maybe a short transition). Wait a bit before giving up.
+            missing++
+            if (missing >= 5) {
+                running = false
+            } else {
+                handler.postDelayed({ step() }, 2000)
+            }
+            return
+        }
+        missing = 0
 
         val sendBtn = roots.firstNotNullOfOrNull { findSend(it) }
         if (sendBtn != null) {
@@ -95,12 +115,15 @@ class HingeAutoService : AccessibilityService() {
                 noHeart = 0
             } else {
                 noHeart++
-                if (noHeart >= 3) {
+                if (noHeart >= 8) {
                     dumpScreen(roots)
+                    toast("Stopped after $count likes: no heart found. Screen info copied. Paste it to Claude.")
                     halted = true
                     running = false
                     return
                 }
+                // No heart in view: scroll down to reveal more of the profile
+                if (noHeart >= 2) swipeUp()
             }
             handler.postDelayed({ step() }, 1500)
         }
@@ -153,6 +176,19 @@ class HingeAutoService : AccessibilityService() {
         dispatchGesture(g, null, null)
     }
 
+    private fun swipeUp() {
+        val dm = resources.displayMetrics
+        val x = dm.widthPixels * 0.5f
+        val path = Path().apply {
+            moveTo(x, dm.heightPixels * 0.70f)
+            lineTo(x, dm.heightPixels * 0.40f)
+        }
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+            .build()
+        dispatchGesture(g, null, null)
+    }
+
     private fun dumpScreen(roots: List<AccessibilityNodeInfo>) {
         val sb = StringBuilder()
         fun walk(n: AccessibilityNodeInfo?, d: Int) {
@@ -168,7 +204,6 @@ class HingeAutoService : AccessibilityService() {
         roots.forEachIndexed { i, r -> sb.append("=== WINDOW $i ===\n"); walk(r, 0) }
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("hinge-dump", sb.toString()))
-        Toast.makeText(this, "Screen info copied. Paste it to Claude.", Toast.LENGTH_LONG).show()
     }
 
     override fun onInterrupt() { running = false }
